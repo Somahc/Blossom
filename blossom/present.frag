@@ -14,6 +14,7 @@ void main()
 
 	// divide accumulated color by the sample count
 	vec3 color = tex.rgb / tex.a;
+	// vec3 color = tex.rgb;
 
 	/* perform any post-processing you like here */
 

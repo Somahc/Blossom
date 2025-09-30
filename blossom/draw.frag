@@ -4,125 +4,105 @@ layout(location = 0) out vec4 fragColor;
 layout(location = 0) uniform vec4 iResolution;
 layout(location = 1) uniform int iFrame;
 
- 
-
-
-/* vvv your shader goes here vvv */
-
-const float pi = acos(-1.);
-
-mat2 rotate(float b)
-{
-	float c=cos(b);
-	float s=sin(b);
-	return mat2(c,-s,s,c);
+float sd_sphere(vec3 p){
+    return length(p) - 0.5; 
 }
 
-float sdOctahedron(vec3 p, float r)
-{
-	return (dot(abs(p),vec3(1))-r)/sqrt(3.);
+float sdf_box(vec3 pos, vec3 size){
+    vec3 d = abs(pos) - size;
+    return min(max(d.x, max(d.y, d.z)), 0.) + length(max(d,0.));
 }
 
-float shape(vec3 p)
-{
-	float d = sdOctahedron(p,1.5);
-	p.y = abs(p.y)-.15;
-	d = max(d,-sdOctahedron(p,1.5));
-	return d;
+// 最も近いSDFの情報
+struct SDFInfo{
+    int index;
+};
+
+float map(vec3 p,inout SDFInfo info){
+    float d;
+    d = sd_sphere(p);
+
+    float room_d;
+    float outside_d = sdf_box(p, vec3(17, 7, 17));
+    float inside_d = sdf_box(p, vec3(15, 5, 15));
+    float hole_d = sdf_box(p - vec3(0, 5, 0), vec3(5, 4, 5));
+    room_d = max(outside_d, -inside_d);
+    room_d = max(room_d, -hole_d);
+
+    info.index = 0;
+
+    d=min(d, room_d);
+    return d;
 }
 
-// space-repeating macro
-vec3 rep(vec3 a,float b)
-{
-	return mod(a-b,b+b)-b;
+vec3 get_normal(vec3 p){
+    vec2 eps = vec2(0.001,0.0);
+    SDFInfo dammy;
+    return normalize(vec3(
+        map(p+eps.xyy,dammy)-map(p-eps.xyy,dammy),
+        map(p+eps.yxy,dammy)-map(p-eps.yxy,dammy),
+        map(p+eps.yyx,dammy)-map(p-eps.yyx,dammy)
+    ));
 }
 
-// sdf describing the scene geometry
-float scene(vec3 p)
-{
-	float d=1e9;
-	float R=4.;
-	
-	for (int i=0;i<3;++i){
-		d = min(d,shape(rep(p+vec3(R,0,R),R)));
-		d = min(d,shape(rep(p+vec3(0,R,0),R)));
-		p = p.yzx;
-	}
-	
-	return d;
+struct SurfaceInfo{
+    vec3 color;
+    vec3 normal;
+    vec3 position;
+};
+
+#define MAX_STEP 300
+bool raymarching(vec3 ro,vec3 rd,inout SurfaceInfo info){
+    float dist = 0.0;
+    float sum_d = 0.0;
+    SDFInfo sdf_info;
+    for(int i = 0; i < MAX_STEP; i++){
+        dist = map(ro + rd * sum_d,sdf_info);
+        if(dist < 0.001){
+            info.position = ro + rd * sum_d;
+            info.color = vec3(1.0); 
+            info.normal = get_normal(info.position);
+            return true;
+        }
+        sum_d += dist;
+    }
+
+    info.color = vec3(0.0);
+    info.normal = vec3(0.0);
+    return false;
 }
 
+#define LIGHT_DIR normalize(vec3(.5, 1., 0.))
 
-// hash functions adapted from Devour
-// https://www.shadertoy.com/view/3llSzM
-float seed;
-float hash() {
-	float p=fract((seed++)*.1031);
-	p+=(p*(p+19.19))*3.;
-	return fract((p+p)*p);
+vec3 render(vec3 ro, vec3 rd){
+    vec3 color = vec3(0.);
+    SurfaceInfo info;
+    if(raymarching(ro, rd, info)){
+        // 衝突時の処理
+        vec3 shadow_dir = LIGHT_DIR;
+        vec3 shadow_ori = info.position + shadow_dir * .02;
+        SurfaceInfo shadow_info;
+        bool hit = raymarching(shadow_ori, shadow_dir, shadow_info);
+        float shadow = 1. - float(hit);
+
+        color = info.color * (max(dot(info.normal, LIGHT_DIR), 0.) * shadow + 0.2);
+    }else{
+        color = vec3(0.);
+    }
+    
+    return color;
 }
-vec2 hash2(){return vec2(hash(),hash());}
-
 
 void main()
 {
-	// seed the RNG (again taken from Devour)
-	seed = float(((iFrame*73856093)^int(gl_FragCoord.x)*19349663^int(gl_FragCoord.y)*83492791)%38069);
+    vec2 uv = (gl_FragCoord.xy * 2.0 - iResolution.xy)/iResolution.y;
 
-	// set up UVs, jittered for antialiasing
-	vec2 uv = (gl_FragCoord.xy+hash2()-.5)/iResolution.xy-.5;
-	uv.x *= iResolution.z;
+    vec3 color = vec3(0.);
 
-	// mess with UVs for a fun wide-angle lens
-	uv *= 4.+length(uv);
+    vec3 cam_ori = vec3(0.0,0.0,-3.0);
+    vec3 cam_dir = normalize(vec3(uv,1.0));
 
-	// create a camera
-	vec3 cam = vec3(0,0,-10);
-	vec3 dir = normalize(vec3(uv,1));
+    color = render(cam_ori, cam_dir);
 
-	// a bit of diamond-shaped bokeh
-	vec2 bokehOffset = (hash2()-.5)*rotate(pi*.25);
-	const float dofScale = .5;
-	const float focusDistance = 17.;
-	cam.xy += bokehOffset*dofScale;
-	dir.xy -= bokehOffset*dofScale/focusDistance;
-
-	// spin the camera
-	cam.yz *= rotate(atan(1.,sqrt(2.)));
-	dir.yz *= rotate(atan(1.,sqrt(2.)));
-	cam.xz *= rotate(pi*.75);
-	dir.xz *= rotate(pi*.75);
-
-	// background color
-	vec3 color = vec3(.2*(length(uv)),.1,.25);
-
-	// raymarcher loop
-	const float epsilon = .001;
-	float t = 0.;
-	float k = 0.;
-	for(int i=0;i<200;++i) {
-		k = scene(cam+dir*t);
-		if(abs(k) < epsilon)
-			break;
-		t += k;
-	}
-
-	// surface shading
-	if (abs(k) < epsilon)
-	{
-		vec3 h = cam+dir*t;
-		vec2 o = vec2(epsilon,0);
-		vec3 n = normalize(vec3(
-			scene(h+o.xyy),
-			scene(h+o.yxy),
-			scene(h+o.yyx)
-		)-k);
-
-		float light = dot(n,normalize(vec3(1,2,3)))*.35+.65;
-
-		float fog = min(1.,pow(.9, t-20.));
-		color = mix(color, vec3(light), fog);
-	}
-	  
-	fragColor = vec4(color,1);
+    fragColor = vec4(color,1.0);
 }
