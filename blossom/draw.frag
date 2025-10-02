@@ -3,6 +3,8 @@
 layout(location = 0) out vec4 fragColor;
 layout(location = 0) uniform vec4 iResolution;
 layout(location = 1) uniform int iFrame;
+#define NUM_MAT 4 // マテリアル数
+vec3 color[NUM_MAT] = {vec3(0.8), vec3(0.2, 0.8, 0.2), vec3(0.8, 0.2, 0.2), vec3(0.2, 0.2, 0.8)};
 
 float sd_sphere(vec3 p){
     return length(p) - 0.5; 
@@ -30,8 +32,17 @@ float map(vec3 p,inout SDFInfo info){
     room_d = max(room_d, -hole_d);
 
     info.index = 0;
-
+    info.index = (d < room_d) ? 1 : info.index;
     d=min(d, room_d);
+
+    float blueSphere = sd_sphere(p - vec3(2., 0., 0.));
+    float redSphere = sd_sphere(p + vec3(2., 0., 0.));
+
+    info.index = (blueSphere < d) ? 3 : info.index;
+    d = min(d, blueSphere);
+    info.index = (redSphere < d) ? 2 : info.index;
+    d = min(d, redSphere);
+
     return d;
 }
 
@@ -62,6 +73,7 @@ bool raymarching(vec3 ro,vec3 rd,inout SurfaceInfo info){
             info.position = ro + rd * sum_d;
             info.color = vec3(1.0); 
             info.normal = get_normal(info.position);
+            info.color = color[sdf_info.index];
             return true;
         }
         sum_d += dist;
