@@ -6,6 +6,22 @@ layout(location = 1) uniform int iFrame;
 #define NUM_MAT 4 // マテリアル数
 vec3 color[NUM_MAT] = {vec3(0.8), vec3(0.2, 0.8, 0.2), vec3(0.8, 0.2, 0.2), vec3(0.2, 0.2, 0.8)};
 
+uint seed;
+uint PCGHash(){
+    seed = seed * 747796405u + 2891336453u;
+    uint state = seed;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) * word;
+}
+
+float rnd1(){
+    return PCGHash() / float(0xFFFFFFFFU);
+}
+
+float rnd2(){
+    return vec2(rnd1(), rnd1());
+}
+
 float sd_sphere(vec3 p){
     return length(p) - 0.5; 
 }
@@ -107,7 +123,9 @@ vec3 render(vec3 ro, vec3 rd){
 
 void main()
 {
-    vec2 uv = (gl_FragCoord.xy * 2.0 - iResolution.xy)/iResolution.y;
+    seed = uint((iFrame + 1) * (gl_FragCoord.x + iResolution.x * gl_FragCoord.y));
+
+    vec2 uv = ((gl_FragCoord.xy + rnd2()) * 2.0 - iResolution.xy)/iResolution.y;
 
     vec3 color = vec3(0.);
 
