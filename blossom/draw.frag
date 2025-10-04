@@ -5,6 +5,7 @@ layout(location = 0) uniform vec4 iResolution;
 layout(location = 1) uniform int iFrame;
 #define NUM_MAT 4 // マテリアル数
 vec3 color[NUM_MAT] = {vec3(0.8), vec3(0.2, 0.8, 0.2), vec3(0.8, 0.2, 0.2), vec3(0.2, 0.2, 0.8)};
+const float PI = acos(-1.);
 
 uint seed;
 uint PCGHash(){
@@ -18,7 +19,7 @@ float rnd1(){
     return PCGHash() / float(0xFFFFFFFFU);
 }
 
-float rnd2(){
+vec2 rnd2(){
     return vec2(rnd1(), rnd1());
 }
 
@@ -35,6 +36,38 @@ float sdf_box(vec3 pos, vec3 size){
 struct SDFInfo{
     int index;
 };
+
+void tangentSpaceBasis(vec3 normal, inout vec3 tangent, inout vec3 binormal){
+    vec3 d = vec3(0,1,0);
+    if(abs(normal.y) > .99) d = vec3(0,0,1);
+    tangent = normalize(cross(normal, d));
+    binormal = normalize(cross(tangent, normal));
+}
+
+vec3 worldToLocal(vec3 tangent, vec3 normal, vec3 binormal, vec3 world){
+    return vec3(dot(world, tangent), dot(world, normal), dot(world, binormal));
+}
+
+vec3 localToWorld(vec3 tangent, vec3 normal, vec3 binormal, vec3 local){
+    return tangent * local.x + binormal * local.z + normal * local.y;
+}
+
+vec3 hemisphereSampling(vec2 uv){
+    float theta = acos(uv.x);
+    float phi = 2. * PI * uv.y;
+    return vec3(sin(theta) * cos(phi), cos(theta), sin(theta) * sin(phi));
+}
+
+vec3 cosineSampling(vec2 uv, inout float pdf){
+    float theta = acos(1. - 2.0f * uv.x) * .5;
+    float phi = 2. * PI * uv.y;
+    pdf = cos(theta) / PI;
+    return vec3(sin(theta) * cos(phi), cos(theta), sin(theta) * sin(phi));
+}
+
+vec3 IBL(vec3 dir){
+    return vec3(1.);
+}
 
 float map(vec3 p,inout SDFInfo info){
     float d;
@@ -73,6 +106,7 @@ vec3 get_normal(vec3 p){
 }
 
 struct SurfaceInfo{
+    float ray_dist;
     vec3 color;
     vec3 normal;
     vec3 position;
@@ -86,6 +120,7 @@ bool raymarching(vec3 ro,vec3 rd,inout SurfaceInfo info){
     for(int i = 0; i < MAX_STEP; i++){
         dist = map(ro + rd * sum_d,sdf_info);
         if(dist < 0.001){
+            info.ray_dist = sum_d;
             info.position = ro + rd * sum_d;
             info.color = vec3(1.0); 
             info.normal = get_normal(info.position);
@@ -95,30 +130,94 @@ bool raymarching(vec3 ro,vec3 rd,inout SurfaceInfo info){
         sum_d += dist;
     }
 
+    info.ray_dist = 100000.;
     info.color = vec3(0.0);
     info.normal = vec3(0.0);
     return false;
 }
 
 #define LIGHT_DIR normalize(vec3(.5, 1., 0.))
-
+#define RTAO_NUM 16
+#define MAX_DEPTH 10
 vec3 render(vec3 ro, vec3 rd){
-    vec3 color = vec3(0.);
-    SurfaceInfo info;
-    if(raymarching(ro, rd, info)){
-        // 衝突時の処理
-        vec3 shadow_dir = LIGHT_DIR;
-        vec3 shadow_ori = info.position + shadow_dir * .02;
-        SurfaceInfo shadow_info;
-        bool hit = raymarching(shadow_ori, shadow_dir, shadow_info);
-        float shadow = 1. - float(hit);
+    vec3 LTE = vec3(0.); // 最終結果
+    vec3 throughput = vec3(1.); // 反射率
 
-        color = info.color * (max(dot(info.normal, LIGHT_DIR), 0.) * shadow + 0.2);
-    }else{
-        color = vec3(0.);
+    vec3 ray_ori = ro;
+    vec3 ray_dir = rd;
+
+    for(int i = 0; i < MAX_DEPTH; i++){
+        SurfaceInfo info;
+        if(!raymarching(ray_ori, ray_dir, info)){
+            // 衝突しなかった場合
+            LTE += throughput * IBL(ray_dir);
+            break;
+        }
+
+        // 衝突した場合
+        vec3 normal = info.normal;
+        vec3 tangent, binormal;
+        tangentSpaceBasis(normal, tangent, binormal);
+
+        vec3 local_wo = worldToLocal(tangent, normal, binormal, -ray_dir);
+
+        // 方向サンプリング
+        float pdf;
+        vec3 local_wi = cosineSampling(rnd2(), pdf);
+
+        vec3 wi = localToWorld(tangent, normal, binormal, local_wi);
+
+        // BSDFの計算
+        vec3 bsdf = info.color / PI; // Lambert
+        float cosine = dot(wi, normal);
+
+        // throughputの更新
+        throughput *= bsdf * cosine / pdf;
+
+        //レイの更新
+        ray_dir = wi;
+        ray_ori = info.position + ray_dir * .01;
     }
+
+    return LTE;
+
+    // vec3 color = vec3(0.);
+    // SurfaceInfo info;
+    // if(raymarching(ro, rd, info)){
+    //     // 衝突時の処理
+
+    //     // shadow
+    //     vec3 shadow_dir = LIGHT_DIR;
+    //     vec3 shadow_ori = info.position + shadow_dir * .02;
+    //     SurfaceInfo shadow_info;
+    //     bool hit = raymarching(shadow_ori, shadow_dir, shadow_info);
+    //     float shadow = 1. - float(hit);
+
+    //     // AO
+    //     vec3 tangent, binormal;
+    //     tangentSpaceBasis(info.normal, tangent, binormal);
+
+    //     float RTAO = 0.;
+    //     for(int i = 0; i < RTAO_NUM; i++){
+    //         vec3 dir = hemisphereSampling(rnd2());
+    //         dir = localToWorld(tangent, info.normal, binormal, dir);
+    //         vec3 ori = info.position + dir * .02;
+    //         SurfaceInfo rtao_info;
+    //         bool hit = raymarching(ori, dir, rtao_info);
+
+    //         if(rtao_info.ray_dist < 1.){
+    //             RTAO += float(hit);
+    //         }
+    //     }
+
+    //     RTAO = (1. - RTAO / RTAO_NUM);
+
+    //     color = info.color * (max(dot(info.normal, LIGHT_DIR), 0.) * shadow + 0.2) * RTAO;
+    // }else{
+    //     color = vec3(0.);
+    // }
     
-    return color;
+    // return color;
 }
 
 void main()
