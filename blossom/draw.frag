@@ -5,6 +5,8 @@ layout(location = 0) uniform vec4 iResolution;
 layout(location = 1) uniform int iFrame;
 #define NUM_MAT 4 // マテリアル数
 vec3 color[NUM_MAT] = {vec3(0.8), vec3(0.2, 0.8, 0.2), vec3(0.8, 0.2, 0.2), vec3(0.2, 0.2, 0.8)};
+vec3 emission[NUM_MAT] = {vec3(0.), vec3(0.), vec3(1.), vec3(0.)};
+float roughness[NUM_MAT] = {0.0,1.0,0.0,0.0};
 const float PI = acos(-1.);
 
 uint seed;
@@ -66,7 +68,7 @@ vec3 cosineSampling(vec2 uv, inout float pdf){
 }
 
 vec3 IBL(vec3 dir){
-    return vec3(1.);
+    return vec3(.3);
 }
 
 float map(vec3 p,inout SDFInfo info){
@@ -108,6 +110,8 @@ vec3 get_normal(vec3 p){
 struct SurfaceInfo{
     float ray_dist;
     vec3 color;
+    vec3 emission; // ライトの明るさ
+    float roughness;
     vec3 normal;
     vec3 position;
 };
@@ -125,6 +129,8 @@ bool raymarching(vec3 ro,vec3 rd,inout SurfaceInfo info){
             info.color = vec3(1.0); 
             info.normal = get_normal(info.position);
             info.color = color[sdf_info.index];
+            info.emission = emission[sdf_info.index];
+            info.roughness = roughness[sdf_info.index];
             return true;
         }
         sum_d += dist;
@@ -147,10 +153,21 @@ vec3 render(vec3 ro, vec3 rd){
     vec3 ray_dir = rd;
 
     for(int i = 0; i < MAX_DEPTH; i++){
+
+        float russian_p = clamp(max(max(throughput.x, throughput.y), throughput.z), 0., 1.);
+
+        if (russian_p < rnd1()) break;
+
+
         SurfaceInfo info;
         if(!raymarching(ray_ori, ray_dir, info)){
             // 衝突しなかった場合
             LTE += throughput * IBL(ray_dir);
+            break;
+        }
+
+        if(length(info.emission) > 0.){
+            LTE += throughput * info.emission;
             break;
         }
 
