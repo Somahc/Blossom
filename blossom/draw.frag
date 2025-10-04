@@ -5,8 +5,8 @@ layout(location = 0) uniform vec4 iResolution;
 layout(location = 1) uniform int iFrame;
 #define NUM_MAT 4 // マテリアル数
 vec3 color[NUM_MAT] = {vec3(0.8), vec3(0.2, 0.8, 0.2), vec3(0.8, 0.2, 0.2), vec3(0.2, 0.2, 0.8)};
-vec3 emission[NUM_MAT] = {vec3(0.), vec3(0.), vec3(1.), vec3(0.)};
-float roughness[NUM_MAT] = {0.0,1.0,0.0,0.0};
+vec3 emission[NUM_MAT] = {vec3(0.), vec3(0.), vec3(10.), vec3(0.)};
+float roughness[NUM_MAT] = {1.0,0.,0.0,0.0};
 const float PI = acos(-1.);
 
 uint seed;
@@ -68,7 +68,51 @@ vec3 cosineSampling(vec2 uv, inout float pdf){
 }
 
 vec3 IBL(vec3 dir){
-    return vec3(.3);
+    return vec3(4.);
+}
+
+vec3 shlickFresnel(vec3 F0,float cosTheta){
+    float delta = 1.0 - cosTheta;
+    return F0 + (1.0 - F0) * delta * delta * delta * delta * delta;
+}
+
+float GGX_Lambda(vec3 v,float alpha) {
+    float delta = 1.0f + (alpha * alpha * v.x * v.x + alpha * alpha * v.z * v.z) / (v.y * v.y);
+    return (-1.0 + sqrt(delta)) / 2.0f;
+}
+
+float GGX_D(vec3 wm,float alpha) {
+    float term1 = wm.x * wm.x / (alpha * alpha) + wm.z * wm.z / (alpha * alpha) + wm.y * wm.y;
+    float term2 = PI * alpha * alpha * term1 * term1;
+    return 1.0f / term2;
+}
+
+float GGX_G1(vec3 w,float alpha) {
+    return 1.0f / (1.0f + GGX_Lambda(w,alpha));
+}
+
+float GGX_G2_HeightCorrelated(vec3 wi, vec3 wo,float alpha) {
+    return 1.0f / (1.0f + GGX_Lambda(wi,alpha) + GGX_Lambda(wo,alpha));
+}
+
+vec3 ggx_halfsampling(vec2 uv,float alpha){
+    float theta = atan(alpha * sqrt(uv.x) / sqrt(max(1.0 - uv.x,0.0)));
+    float phi = 2.0 * PI * uv.y;
+    return vec3(sin(theta) * cos(phi),cos(theta),sin(theta) * sin(phi));
+}
+
+vec3 sampleVisibleNormal(vec2 uv, vec3 wo,float alpha) {
+    vec3 strech_wo = normalize(vec3(wo.x * alpha, wo.y, wo.z * alpha));
+    float phi = 2.0f * PI * uv.x;
+    float z = fma((1.0f - uv.y), (1.0f + strech_wo.y), -strech_wo.y);
+    float sinTheta = sqrt(clamp(1.0f - z * z, 0.0f, 1.0f));
+    float x = sinTheta * cos(phi);
+    float y = sinTheta * sin(phi);
+    vec3 c = vec3(x, z, y);
+    vec3 h = c + strech_wo;
+
+    vec3 wm = normalize(vec3(h.x * alpha, h.y, h.z * alpha));
+    return wm;
 }
 
 float map(vec3 p,inout SDFInfo info){
@@ -116,6 +160,44 @@ struct SurfaceInfo{
     vec3 position;
 };
 
+vec3 BSDF(vec3 wo, inout vec3 wi, SurfaceInfo info){
+    float pdf;
+    //Lambert
+    //wi = cosineSampling(rnd2(),pdf);
+    //vec3 bsdf = info.color / PI; 
+
+    float alpha = clamp(info.roughness * info.roughness,0.001,1.0);
+
+    //GGX
+    //WalterSampling
+    //vec3 wm = ggx_halfsampling(rnd2(),alpha);
+
+    //VisibleNoraml Sampling
+    vec3 wm = sampleVisibleNormal(rnd2(),wo,alpha);
+    wi = reflect(-wo,wm);
+
+    if(wi.y < 0.0){
+        return vec3(0.0);
+    }
+
+    float D = GGX_D(wm,alpha);
+    float G = GGX_G1(wo,alpha) * GGX_G1(wi,alpha);
+    vec3 F = shlickFresnel(info.color,dot(wm,wo));
+    
+    vec3 bsdf = D * G * F / (4.0 * wo.y * wi.y);
+    
+    //Walter Sampling
+    //pdf = D * wm.y / (4.0 * dot(wm,wo));
+
+    //Visible Normal Sampling
+    pdf = 0.25f * GGX_D(wm,alpha) * dot(wo, wm) / (dot(wm, wo) * abs(wo.y)* (1.0f + GGX_Lambda(wo,alpha)));
+
+    //Cosine Term
+    float cosine = wi.y;
+
+    return bsdf * cosine / pdf;
+}
+
 #define MAX_STEP 300
 bool raymarching(vec3 ro,vec3 rd,inout SurfaceInfo info){
     float dist = 0.0;
@@ -157,6 +239,7 @@ vec3 render(vec3 ro, vec3 rd){
         float russian_p = clamp(max(max(throughput.x, throughput.y), throughput.z), 0., 1.);
 
         if (russian_p < rnd1()) break;
+        throughput /= russian_p;
 
 
         SurfaceInfo info;
@@ -177,19 +260,10 @@ vec3 render(vec3 ro, vec3 rd){
         tangentSpaceBasis(normal, tangent, binormal);
 
         vec3 local_wo = worldToLocal(tangent, normal, binormal, -ray_dir);
+        vec3 local_wi;
 
-        // 方向サンプリング
-        float pdf;
-        vec3 local_wi = cosineSampling(rnd2(), pdf);
-
+        throughput *= BSDF(local_wo, local_wi, info);
         vec3 wi = localToWorld(tangent, normal, binormal, local_wi);
-
-        // BSDFの計算
-        vec3 bsdf = info.color / PI; // Lambert
-        float cosine = dot(wi, normal);
-
-        // throughputの更新
-        throughput *= bsdf * cosine / pdf;
 
         //レイの更新
         ray_dir = wi;
@@ -197,44 +271,6 @@ vec3 render(vec3 ro, vec3 rd){
     }
 
     return LTE;
-
-    // vec3 color = vec3(0.);
-    // SurfaceInfo info;
-    // if(raymarching(ro, rd, info)){
-    //     // 衝突時の処理
-
-    //     // shadow
-    //     vec3 shadow_dir = LIGHT_DIR;
-    //     vec3 shadow_ori = info.position + shadow_dir * .02;
-    //     SurfaceInfo shadow_info;
-    //     bool hit = raymarching(shadow_ori, shadow_dir, shadow_info);
-    //     float shadow = 1. - float(hit);
-
-    //     // AO
-    //     vec3 tangent, binormal;
-    //     tangentSpaceBasis(info.normal, tangent, binormal);
-
-    //     float RTAO = 0.;
-    //     for(int i = 0; i < RTAO_NUM; i++){
-    //         vec3 dir = hemisphereSampling(rnd2());
-    //         dir = localToWorld(tangent, info.normal, binormal, dir);
-    //         vec3 ori = info.position + dir * .02;
-    //         SurfaceInfo rtao_info;
-    //         bool hit = raymarching(ori, dir, rtao_info);
-
-    //         if(rtao_info.ray_dist < 1.){
-    //             RTAO += float(hit);
-    //         }
-    //     }
-
-    //     RTAO = (1. - RTAO / RTAO_NUM);
-
-    //     color = info.color * (max(dot(info.normal, LIGHT_DIR), 0.) * shadow + 0.2) * RTAO;
-    // }else{
-    //     color = vec3(0.);
-    // }
-    
-    // return color;
 }
 
 void main()
