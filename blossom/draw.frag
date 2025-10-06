@@ -6,7 +6,8 @@ layout(location = 1) uniform int iFrame;
 #define NUM_MAT 4 // マテリアル数
 vec3 color[NUM_MAT] = {vec3(0.8), vec3(0.2, 0.8, 0.2), vec3(0.8, 0.2, 0.2), vec3(0.2, 0.2, 0.8)};
 vec3 emission[NUM_MAT] = {vec3(0.), vec3(0.), vec3(10.), vec3(0.)};
-float roughness[NUM_MAT] = {1.0,0.,0.0,0.0};
+float roughness[NUM_MAT] = {1.0,0.,0.5,0.5};
+float metallic[NUM_MAT] = {0., 1., 1., 0.};
 const float PI = acos(-1.);
 
 uint seed;
@@ -115,6 +116,14 @@ vec3 sampleVisibleNormal(vec2 uv, vec3 wo,float alpha) {
     return wm;
 }
 
+float pdfLambert(vec3 wi){
+    return wi.y / PI;
+}
+
+float pdfGGX(vec3 wo,vec3 wm,float alpha){
+    return 0.25f * GGX_D(wm,alpha) * dot(wo, wm) / (dot(wm, wo) * abs(wo.y)* (1.0f + GGX_Lambda(wo,alpha)));
+}
+
 float map(vec3 p,inout SDFInfo info){
     float d;
     d = sd_sphere(p);
@@ -158,27 +167,48 @@ struct SurfaceInfo{
     float roughness;
     vec3 normal;
     vec3 position;
+    vec3 metallic;
 };
 
 vec3 BSDF(vec3 wo, inout vec3 wi, SurfaceInfo info){
-    float pdf;
     //Lambert
     //wi = cosineSampling(rnd2(),pdf);
     //vec3 bsdf = info.color / PI; 
 
     float alpha = clamp(info.roughness * info.roughness,0.001,1.0);
+    vec3 F0 = mix(vec3(.04), info.color, info.metallic);
+
+    float dif_weight = float(1. - info.metallic);
+    float spec_weight = 1.;
+    float sum_weight = dif_weight + spec_weight;
+
+    float cd = dif_weight / sum_weight;
+    float cs = spec_weight / sum_weight;
 
     //GGX
     //WalterSampling
     //vec3 wm = ggx_halfsampling(rnd2(),alpha);
 
     //VisibleNoraml Sampling
-    vec3 wm = sampleVisibleNormal(rnd2(),wo,alpha);
-    wi = reflect(-wo,wm);
+    vec3 wm;
+    float pdf_diffuse;
+    float pdf_specular;
+    if(rnd1() < cd){
+        wi = cosineSampling(rnd2(), pdf_diffuse);
+        wm = normalize(wi + wo);
+        pdf_specular = pdfGGX(wo, wm, alpha);
+    }else{
+        wm = sampleVisibleNormal(rnd2(), wo, alpha);
+        wi = reflect(-wo, wm);
+        pdf_specular = pdfGGX(wo, wm, alpha);
+        pdf_diffuse = pdfLambert(wi);
+    }
 
     if(wi.y < 0.0){
         return vec3(0.0);
     }
+
+    float pdf = cd * pdf_diffuse + cs * pdf_specular;
 
     float D = GGX_D(wm,alpha);
     float G = GGX_G1(wo,alpha) * GGX_G1(wi,alpha);
@@ -188,9 +218,6 @@ vec3 BSDF(vec3 wo, inout vec3 wi, SurfaceInfo info){
     
     //Walter Sampling
     //pdf = D * wm.y / (4.0 * dot(wm,wo));
-
-    //Visible Normal Sampling
-    pdf = 0.25f * GGX_D(wm,alpha) * dot(wo, wm) / (dot(wm, wo) * abs(wo.y)* (1.0f + GGX_Lambda(wo,alpha)));
 
     //Cosine Term
     float cosine = wi.y;
